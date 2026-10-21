@@ -4,6 +4,16 @@ on:
   schedule:
     - cron: "0 0 * * *"
   workflow_dispatch:
+  # Regenerate right away when the card setup itself changes.
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/update-stats.yml
+      - .github/scripts/**
+
+concurrency:
+  group: update-readme-cards
+  cancel-in-progress: false
 
 jobs:
   build:
@@ -15,21 +25,38 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Each card step may fail on its own (e.g. a GitHub API hiccup). With
+      # fail_on_error / a non-zero exit the old SVG is left untouched instead of
+      # being overwritten by a "Something went wrong" card; the last step then
+      # marks the run as failed so the problem is visible.
       - name: Generate stats card
-        uses: readme-tools/github-readme-stats-action@v1
+        id: stats
+        continue-on-error: true
+        uses: stats-organization/github-readme-stats-action@v2
         with:
           card: stats
-          options: username=FridrichMethod&show_icons=true&theme=catppuccin_latte&hide_border=true&count_private=true
+          options: username=FridrichMethod&show_icons=true&theme=catppuccin_latte&hide_border=true
           path: profile/stats.svg
           token: ${{ secrets.GITHUB_TOKEN }}
+          fail_on_error: true
 
       - name: Generate top languages card
-        uses: readme-tools/github-readme-stats-action@v1
+        id: top_langs
+        continue-on-error: true
+        uses: stats-organization/github-readme-stats-action@v2
         with:
           card: top-langs
           options: username=FridrichMethod&layout=compact&theme=catppuccin_latte&hide_border=true&langs_count=8
           path: profile/top-langs.svg
           token: ${{ secrets.GITHUB_TOKEN }}
+          fail_on_error: true
+
+      - name: Generate activity graph
+        id: activity
+        continue-on-error: true
+        run: python3 .github/scripts/activity_graph.py --user FridrichMethod --out profile/activity-graph.svg
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Commit cards
         run: |
@@ -38,3 +65,9 @@ jobs:
           git add profile/*.svg
           git commit -m "Update README cards" || exit 0
           git push
+
+      - name: Fail if any card could not be generated
+        if: steps.stats.outcome == 'failure' || steps.top_langs.outcome == 'failure' || steps.activity.outcome == 'failure'
+        run: |
+          echo "::error::Card generation failed (stats=${{ steps.stats.outcome }}, top-langs=${{ steps.top_langs.outcome }}, activity=${{ steps.activity.outcome }}). The previous SVGs were kept."
+          exit 1
